@@ -12,6 +12,7 @@
 """
 import argparse
 import json
+import logging
 import os
 import csv
 import random
@@ -56,8 +57,18 @@ def main():
     parser.add_argument("--workers", "-w", type=int, default=5, help="并发线程数")
     parser.add_argument("--shuffle", action="store_true", help="随机打乱 benchmark 顺序后执行")
     parser.add_argument("--seed", type=int, default=None, help="shuffle 随机种子")
+    parser.add_argument("--source", "-s", type=str, default=None, help="按'问题来源'列过滤子集，如: --source 历史评测")
+    parser.add_argument("--debug", action="store_true", help="开启 debug 模式，打印接口请求/响应日志")
 
     args = parser.parse_args()
+
+    # 配置日志级别
+    log_level = logging.DEBUG if args.debug else logging.WARNING
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        datefmt="%H:%M:%S"
+    )
 
     if args.query:
         # 单条查询模式
@@ -82,9 +93,12 @@ def main():
 
         print(f"Benchmark 模式: {benchmark_file} -> {output_file}")
         print(f"并发线程数: {args.workers}")
+        if args.source:
+            print(f"过滤问题来源: {args.source}")
         print()
 
-        stats = process_benchmark(actual_benchmark, output_file, max_workers=args.workers)
+        stats = process_benchmark(actual_benchmark, output_file, max_workers=args.workers,
+                                  source_filter=args.source)
 
         # 清理临时文件
         if args.shuffle and actual_benchmark != benchmark_file:

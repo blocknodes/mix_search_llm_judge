@@ -3,6 +3,7 @@
 """
 import csv
 import json
+import logging
 import sys
 import time
 from typing import Dict, List, Optional, Tuple
@@ -13,6 +14,8 @@ from kbp_client import KbpRetrievalClient
 from llm_client import LLMClient
 from llm_judge import judge_relevance, compute_hit_metrics
 from config import JUDGE_CONFIG, CONCURRENCY_CONFIG
+
+logger = logging.getLogger(__name__)
 
 # 线程本地存储，避免多线程共享客户端
 _thread_local = threading.local()
@@ -28,7 +31,7 @@ def print_progress(processed, total, stats, start_time):
     filled = int(bar_len * processed / total) if total > 0 else 0
     bar = '█' * filled + '░' * (bar_len - filled)
     pct = processed / total * 100 if total > 0 else 0
-    
+
     elapsed = time.time() - start_time
     if processed > 0:
         eta = elapsed / processed * (total - processed)
@@ -36,7 +39,7 @@ def print_progress(processed, total, stats, start_time):
     else:
         eta_str = "--"
     elapsed_str = f"{int(elapsed//60)}m{int(elapsed%60)}s"
-    
+
     hit_parts = " ".join(f"H@{n}:{stats[f'hit{n}']}" for n in HIT_NS)
     sys.stdout.write(
         f"\r[{bar}] {processed}/{total} ({pct:.1f}%) "
@@ -51,15 +54,23 @@ def print_progress(processed, total, stats, start_time):
 def stage1_retrieve(query: str, category: str = "product",
                     kbp_client: KbpRetrievalClient = None,
                     top_k: int = None, score_threshold: float = None,
-                    search_mode: str = None, search_strategy: str = None) -> Optional[Dict]:
+                    search_mode: str = None, search_strategy: str = None,
+                    api_key: str = None) -> Optional[Dict]:
     """
     第一阶段：调用 KBP 检索
-    
+
     Returns:
         {"query": ..., "category": ..., "candidates": [...]}
     """
     if kbp_client is None:
         kbp_client = KbpRetrievalClient()
+
+    # 如果该 query 有自己的 api_key，临时替换
+    original_api_key = None
+    if api_key:
+        original_api_key = kbp_client.api_key
+        kbp_client.api_key = api_key
+        kbp_client.session.headers['api-key'] = api_key
 
     retrieval_result = kbp_client.retrieval(
         query=query, top_k=top_k,
@@ -67,6 +78,11 @@ def stage1_retrieve(query: str, category: str = "product",
         search_mode=search_mode,
         search_strategy=search_strategy
     )
+
+    # 恢复原始 api_key
+    if original_api_key is not None:
+        kbp_client.api_key = original_api_key
+        kbp_client.session.headers['api-key'] = original_api_key
 
     if retrieval_result is None:
         return None
@@ -95,10 +111,10 @@ def stage2_judge(retrieval_result: Dict, llm_client: LLMClient = None,
                  judge_top_n: int = None) -> Optional[Dict]:
     """
     第二阶段：调用 LLM 进行相关性评分
-    
+
     Args:
         retrieval_result: stage1_retrieve 的输出
-    
+
     Returns:
         带有 llm_relevance 评分和 hit 指标的完整结果
     """
@@ -132,12 +148,15 @@ def stage2_judge(retrieval_result: Dict, llm_client: LLMClient = None,
 def process_query(query: str, category: str = "product",
                   kbp_client: KbpRetrievalClient = None,
                   llm_client: LLMClient = None, top_k: int = None,
-                  judge_top_n: int = None) -> Optional[Dict]:
+                  judge_top_n: int = None, api_key: str = None) -> Optional[Dict]:
     """
     完整处理：检索 + LLM 评分（两阶段合并）
     """
+    logger.debug(f"[Pipeline] query: {query}, apikey: {api_key or '(默认)'}")
+
     # Stage 1
-    retrieval_result = stage1_retrieve(query, category, kbp_client, top_k)
+    retrieval_result = stage1_retrieve(query, category, kbp_client, top_k,
+                                       api_key=api_key)
     if retrieval_result is None:
         return None
 
@@ -145,26 +164,30 @@ def process_query(query: str, category: str = "product",
     return stage2_judge(retrieval_result, llm_client, judge_top_n)
 
 
-def load_benchmark_csv(csv_file: str) -> List[Tuple[str, str]]:
-    """从 benchmark.csv 读取查询和类别"""
+def load_benchmark_csv(csv_file: str, source_filter: str = None) -> List[Tuple[str, str, str]]:
+    """从 benchmark.csv 读取查询、类别和 apikey，可按问题来源过滤"""
     queries = []
-    with open(csv_file, 'r', encoding='utf-8') as f:
+    with open(csv_file, 'r', encoding='utf-8-sig') as f:
         reader = csv.DictReader(f)
         for row in reader:
             query = row.get('query', '').strip()
             category = row.get('cat', '').strip() or "product"
+            api_key = row.get('apikey', '').strip()
+            source = row.get('问题来源', '').strip()
             if query:
-                queries.append((query, category))
+                if source_filter and source != source_filter:
+                    continue
+                queries.append((query, category, api_key))
     return queries
 
 
 def process_benchmark(input_file: str, output_file: str,
-                      max_workers: int = None) -> Dict:
+                      max_workers: int = None, source_filter: str = None) -> Dict:
     """批量处理 benchmark.csv（支持多线程）"""
     max_workers = max_workers or CONCURRENCY_CONFIG["max_workers"]
 
     # 读取 benchmark
-    queries = load_benchmark_csv(input_file)
+    queries = load_benchmark_csv(input_file, source_filter=source_filter)
     total = len(queries)
     start_time = time.time()
 
@@ -176,7 +199,7 @@ def process_benchmark(input_file: str, output_file: str,
         stats[f"hit{n}"] = 0
     stats_lock = threading.Lock()
 
-    def process_single(query: str, category: str, idx: int) -> Optional[Dict]:
+    def process_single(query: str, category: str, idx: int, api_key: str = "") -> Optional[Dict]:
         """处理单条查询的线程函数"""
         if not hasattr(_thread_local, 'kbp_client'):
             _thread_local.kbp_client = KbpRetrievalClient()
@@ -188,7 +211,8 @@ def process_benchmark(input_file: str, output_file: str,
                 query,
                 category=category,
                 kbp_client=_thread_local.kbp_client,
-                llm_client=_thread_local.llm_client
+                llm_client=_thread_local.llm_client,
+                api_key=api_key or None
             )
             return result
         except Exception as e:
@@ -198,8 +222,8 @@ def process_benchmark(input_file: str, output_file: str,
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_idx = {
-            executor.submit(process_single, query, category, idx): (idx, query, category)
-            for idx, (query, category) in enumerate(queries, 1)
+            executor.submit(process_single, query, category, idx, api_key): (idx, query, category)
+            for idx, (query, category, api_key) in enumerate(queries, 1)
         }
 
         for future in as_completed(future_to_idx):

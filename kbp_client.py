@@ -52,8 +52,11 @@ class KbpRetrievalClient:
         backoff_factor = backoff_factor if backoff_factor is not None else self.retry_config["backoff_factor"]
         jitter_ratio = self.retry_config["jitter_ratio"]
 
-        url = f"{self.base_url}{self.retrieval_path}?user_key={self.user_key}"
-        logger.info(f"[KBP] 请求 URL: {url}")
+        url = f"{self.base_url}{self.retrieval_path}"
+        if self.user_key:
+            url += f"?user_key={self.user_key}"
+        logger.debug(f"[KBP] 请求 URL: {url}")
+        logger.debug(f"[KBP] api-key: {self.api_key}")
 
         payload = {
             "query": query,
@@ -65,12 +68,15 @@ class KbpRetrievalClient:
             },
             "tracingModel": tracing_model
         }
+        logger.debug(f"[KBP] 请求 payload: {json.dumps(payload, ensure_ascii=False)}")
 
         for attempt in range(max_retries + 1):
             try:
                 response = self.session.post(url, data=json.dumps(payload))
                 response.raise_for_status()
-                return response.json()
+                result = response.json()
+                logger.debug(f"[KBP] 响应状态: {response.status_code}, 记录数: {len(result.get('records', []))}")
+                return result
             except requests.exceptions.RequestException as e:
                 if attempt < max_retries:
                     delay = initial_delay * (backoff_factor ** attempt)

@@ -77,10 +77,16 @@ class LLMClient:
 
         for attempt in range(max_retries + 1):
             try:
+                logger.debug(f"[LLM] 请求 URL: {request_url}")
+                logger.debug(f"[LLM] 模型: {payload.get('model')}, temperature: {payload.get('temperature')}")
+                logger.debug(f"[LLM] messages: {json.dumps(messages, ensure_ascii=False)[:500]}")
                 response = requests.post(request_url, json=payload, headers=headers, timeout=timeout, verify=False)
 
                 if response.status_code == 200:
-                    return response.json()
+                    result = response.json()
+                    content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                    logger.debug(f"[LLM] 响应状态: 200, 内容: {content[:200]}")
+                    return result
 
                 if attempt < max_retries:
                     delay = initial_delay * (backoff_factor ** attempt) + random.uniform(0, jitter_max)

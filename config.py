@@ -3,10 +3,10 @@
 """
 
 # KBP 检索 API 配置
-KBP_BASE_URL = "https://inner-apisix-test.hisense.com"
-KBP_USER_KEY = "qimfvt7lwtqeyangfl259vjg8fzdhh5l"
-KBP_RETRIEVAL_PATH = "/kbp-test/openapi/kbp/mix/retrieval"
-KBP_API_KEY = "83dd8d9d-6a77-4954-9071-aa195fb6b406"
+KBP_BASE_URL = "http://aikbpsearch-kbp-prod.xyfprd.hisense.com"
+KBP_USER_KEY = ""
+KBP_RETRIEVAL_PATH = "/openapi/kbp/mix/retrieval"
+KBP_API_KEY = "b29b705e-d508-413d-beb4-86ea95a8f02b"
 
 # LLM 配置
 LLM_CONFIGS = {
@@ -42,18 +42,18 @@ LLM_CONFIGS = {
         "url_params": {},
         "timeout": 180
     },
-    "qwen3_397b": {
+    "hx-gpt-5.4": {
         "url": "http://aibi-superset.hisense.com:4046/v1/chat/completions",
         "headers": {"Content-Type": "application/json", "Authorization": "Bearer {key}"},
         "key": "sk-uhJc7qbF2eTZu3TPTz7MIA",
-        "model": "hx-qwen3.5-397b",
+        "model": "hx-gpt-5.4",
         "url_params": {},
-        "timeout": 180
+        "timeout": 360
     }
 }
 
 # 默认使用的 LLM
-DEFAULT_LLM = "gpt54"
+DEFAULT_LLM = "hx-gpt-5.4"
 
 # 检索配置
 RETRIEVAL_CONFIG = {
